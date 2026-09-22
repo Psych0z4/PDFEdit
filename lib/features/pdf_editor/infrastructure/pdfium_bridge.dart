@@ -18,6 +18,7 @@ import 'package:pdfium_flutter/pdfium_flutter.dart';
 
 import '../domain/reflow/reflow.dart';
 import 'pdfium_geometry.dart';
+import 'pdfium_glyphs.dart';
 
 
 
@@ -157,6 +158,50 @@ Map<String, Object?> readPageSize(Map<String, Object?> params) {
       'width': pdfium.FPDF_GetPageWidthF(page),
       'height': pdfium.FPDF_GetPageHeightF(page),
     };
+  } finally {
+    if (page != nullptr) pdfium.FPDF_ClosePage(page);
+    if (doc != nullptr) pdfium.FPDF_CloseDocument(doc);
+    arena.releaseAll();
+  }
+}
+
+/// Sprawdza, których znaków font wskazanego obiektu nie potrafi narysować.
+///
+/// Dokument jest otwierany tylko do odczytu i zamykany BEZ zapisu — próbki
+/// renderujemy na obiekcie w pamięci, plik użytkownika zostaje nietknięty.
+///
+/// [params] = {'path': String, 'pageIndex': int, 'objectIndex': int, 'text': String}
+Map<String, Object?> probeGlyphSupport(Map<String, Object?> params) {
+  final path = params['path']! as String;
+  final pageIndex = params['pageIndex']! as int;
+  final objectIndex = params['objectIndex']! as int;
+  final text = params['text']! as String;
+
+  final pdfium = pdfiumBindings;
+  final arena = Arena();
+  FPDF_DOCUMENT doc = nullptr;
+  FPDF_PAGE page = nullptr;
+
+  try {
+    doc = _openDocument(pdfium, arena, path);
+    page = pdfium.FPDF_LoadPage(doc, pageIndex);
+    if (page == nullptr) {
+      throw PdfiumBridgeException('Nie udało się wczytać strony $pageIndex.');
+    }
+    final obj = pdfium.FPDFPage_GetObject(page, objectIndex);
+    if (obj == nullptr || pdfium.FPDFPageObj_GetType(obj) != _pageObjText) {
+      return <String, Object?>{'unsupported': <String>[]};
+    }
+
+    final unsupported = findUnsupportedCharacters(
+      pdfium: pdfium,
+      arena: arena,
+      document: doc,
+      page: page,
+      textObject: obj,
+      text: text,
+    );
+    return <String, Object?>{'unsupported': unsupported.toList()};
   } finally {
     if (page != nullptr) pdfium.FPDF_ClosePage(page);
     if (doc != nullptr) pdfium.FPDF_CloseDocument(doc);

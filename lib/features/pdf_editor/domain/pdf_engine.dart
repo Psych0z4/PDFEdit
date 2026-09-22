@@ -33,11 +33,15 @@ abstract class PdfEngine {
   /// Wymiary strony w punktach PDF.
   Future<Result<PageSize>> pageSize(String path, int pageIndex);
 
-  /// Sprawdza, czy font obiektu prawdopodobnie pokrywa znaki nowego tekstu.
+  /// Sprawdza, których znaków [newText] font obiektu nie potrafi narysować.
   ///
-  /// To heurystyka, nie gwarancja: publiczne API PDFium nie udostępnia
-  /// mapowania Unicode -> glif, więc nie da się tego sprawdzić w pełni.
-  GlyphCoverageReport checkGlyphCoverage(EditableTextObject target, String newText);
+  /// Wynik jest pewny, nie heurystyczny: każdy znak jest renderowany
+  /// i porównywany ze wzorcem brakującego glifu.
+  Future<Result<GlyphCoverageReport>> checkGlyphCoverage({
+    required String path,
+    required EditableTextObject target,
+    required String newText,
+  });
 
   /// Stosuje operacje do [sourcePath] i zapisuje wynik do [outputPath].
   ///
@@ -57,11 +61,13 @@ class PageSize {
 }
 
 class GlyphCoverageReport {
-  const GlyphCoverageReport({required this.riskyCharacters});
+  const GlyphCoverageReport({required this.unsupported});
 
-  /// Znaki, których nie było w oryginalnym tekście obiektu, a font jest
-  /// osadzony (czyli najpewniej subsetowany).
-  final Set<String> riskyCharacters;
+  static const ok = GlyphCoverageReport(unsupported: {});
 
-  bool get hasRisk => riskyCharacters.isNotEmpty;
+  /// Znaki, dla których font nie ma glifu. Po zapisie nie pojawią się
+  /// w dokumencie wcale albo wyjdą jako pusty prostokąt.
+  final Set<String> unsupported;
+
+  bool get hasProblems => unsupported.isNotEmpty;
 }

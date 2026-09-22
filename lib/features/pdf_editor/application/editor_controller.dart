@@ -166,11 +166,19 @@ class EditorController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Sprawdza ryzyko brakujących glifów zanim użytkownik zatwierdzi zmiane.
-  GlyphCoverageReport? previewGlyphRisk(String newText) {
+  /// Sprawdza, których znaków nie da się narysować fontem zaznaczonego
+  /// fragmentu. Zwraca null, gdy nie ma czego sprawdzać.
+  Future<GlyphCoverageReport?> checkGlyphs(String newText) async {
     final target = _selected;
-    if (target == null) return null;
-    return _engine.checkGlyphCoverage(target, newText);
+    final path = currentPath;
+    if (target == null || path == null) return null;
+
+    final result = await _engine.checkGlyphCoverage(
+      path: path,
+      target: target,
+      newText: newText,
+    );
+    return result.valueOrNull;
   }
 
   Future<void> replaceSelectedText(String newText) async {

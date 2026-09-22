@@ -187,7 +187,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       builder: (context) => EditTextSheet(
         target: target,
         initialSelection: _guessTappedWord(target, pdfPoint),
-        onCheckGlyphs: _controller.previewGlyphRisk,
+        onCheckGlyphs: _controller.checkGlyphs,
       ),
     );
 

@@ -81,25 +81,38 @@ class PdfiumPdfEngine implements PdfEngine {
   }
 
   @override
-  GlyphCoverageReport checkGlyphCoverage(
-      EditableTextObject target, String newText) {
-    // Publiczne API PDFium nie udostępnia mapowania Unicode -> glif
-    // (FPDFFont_GetGlyphWidth przyjmuje indeks glifu, nie kod znaku), więc
-    // pełnej weryfikacji zrobić się nie da. Heurystyka: font osadzony jest
-    // zwykle subsetem, więc znaki, których nie było w oryginalnej treści,
-    // mogą nie mieć glifu.
-    if (!target.isFontEmbedded) {
-      return const GlyphCoverageReport(riskyCharacters: {});
-    }
-    final existing = target.text.toLowerCase().split('').toSet();
-    final risky = <String>{};
-    for (final char in newText.split('')) {
-      if (char.trim().isEmpty) continue;
-      if (!existing.contains(char.toLowerCase())) {
-        risky.add(char);
-      }
-    }
-    return GlyphCoverageReport(riskyCharacters: risky);
+  Future<Result<GlyphCoverageReport>> checkGlyphCoverage({
+    required String path,
+    required EditableTextObject target,
+    required String newText,
+  }) async {
+    // Znaki, które już są w obiekcie, na pewno da się narysować — sprawdzamy
+    // tylko nowe, żeby nie renderować próbek bez potrzeby.
+    final existing = target.text.runes.map(String.fromCharCode).toSet();
+    final candidates = newText.runes
+        .map(String.fromCharCode)
+        .where((c) => c.trim().isNotEmpty && !existing.contains(c))
+        .toSet();
+    if (candidates.isEmpty) return const Success(GlyphCoverageReport.ok);
+
+    return _guard(
+      'checkGlyphCoverage',
+      () async {
+        final raw = await PdfrxEntryFunctions.instance.compute(
+          bridge.probeGlyphSupport,
+          <String, Object?>{
+            'path': path,
+            'pageIndex': target.pageIndex,
+            'objectIndex': target.objectIndex,
+            'text': candidates.join(),
+          },
+        );
+        return GlyphCoverageReport(
+          unsupported: (raw['unsupported']! as List).cast<String>().toSet(),
+        );
+      },
+      (e) => TextEditFailure('Nie udało się sprawdzić pokrycia znaków.', cause: e),
+    );
   }
 
   @override

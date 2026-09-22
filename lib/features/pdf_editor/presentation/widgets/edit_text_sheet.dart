@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../domain/editable_text_object.dart';
@@ -19,9 +21,9 @@ class DeleteRequested extends EditSheetResult {
 
 /// Arkusz edycji obiektu tekstowego.
 ///
-/// Pole zawiera PELNA treść obiektu, bo tyle właśnie PDFium potrafi podmienić
-/// jednym ruchem. Jesli użytkownik tapnął w konkretne słowo, jest ono wstępnie
-/// zaznaczone — dzieki temu edycja jednego słowa jest wygodna, mimo ze
+/// Pole zawiera PEŁNĄ treść obiektu, bo tyle właśnie PDFium potrafi podmienić
+/// jednym ruchem. Jeśli użytkownik tapnął w konkretne słowo, jest ono wstępnie
+/// zaznaczone — dzięki temu edycja jednego słowa jest wygodna, mimo że
 /// technicznie zapisujemy cały fragment.
 class EditTextSheet extends StatefulWidget {
   const EditTextSheet({
@@ -32,7 +34,11 @@ class EditTextSheet extends StatefulWidget {
   });
 
   final EditableTextObject target;
-  final GlyphCoverageReport? Function(String newText) onCheckGlyphs;
+
+  /// Sprawdzenie pokrycia znaków. Wywołanie schodzi do PDFium, więc jest
+  /// asynchroniczne i wywoływane z opóźnieniem po zakończeniu pisania.
+  final Future<GlyphCoverageReport?> Function(String newText) onCheckGlyphs;
+
   final TextRange? initialSelection;
 
   @override
@@ -40,8 +46,16 @@ class EditTextSheet extends StatefulWidget {
 }
 
 class _EditTextSheetState extends State<EditTextSheet> {
+  static const _debounce = Duration(milliseconds: 350);
+
   late final TextEditingController _controller;
-  GlyphCoverageReport? _glyphReport;
+  Timer? _timer;
+  GlyphCoverageReport? _report;
+  bool _checking = false;
+
+  /// Rośnie przy każdym sprawdzeniu — pozwala odrzucić wynik, który wrócił
+  /// już po kolejnej zmianie tekstu.
+  int _requestId = 0;
 
   @override
   void initState() {
@@ -49,22 +63,36 @@ class _EditTextSheetState extends State<EditTextSheet> {
     _controller = TextEditingController(text: widget.target.text);
     final selection = widget.initialSelection;
     if (selection != null) {
-      _controller.selection =
-          TextSelection(baseOffset: selection.start, extentOffset: selection.end);
+      _controller.selection = TextSelection(
+        baseOffset: selection.start,
+        extentOffset: selection.end,
+      );
     }
-    _controller.addListener(_revalidate);
+    _controller.addListener(_scheduleCheck);
   }
 
-  void _revalidate() {
-    final report = widget.onCheckGlyphs(_controller.text);
-    if (report?.riskyCharacters.toString() !=
-        _glyphReport?.riskyCharacters.toString()) {
-      setState(() => _glyphReport = report);
-    }
+  void _scheduleCheck() {
+    _timer?.cancel();
+    _timer = Timer(_debounce, _runCheck);
+  }
+
+  Future<void> _runCheck() async {
+    final id = ++_requestId;
+    final text = _controller.text;
+    setState(() => _checking = true);
+
+    final report = await widget.onCheckGlyphs(text);
+
+    if (!mounted || id != _requestId) return;
+    setState(() {
+      _report = report;
+      _checking = false;
+    });
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -73,7 +101,8 @@ class _EditTextSheetState extends State<EditTextSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final target = widget.target;
-    final risky = _glyphReport?.riskyCharacters ?? const <String>{};
+    final unsupported = _report?.unsupported ?? const <String>{};
+    final hasProblems = unsupported.isNotEmpty;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -91,6 +120,12 @@ class _EditTextSheetState extends State<EditTextSheet> {
               Expanded(
                 child: Text('Edytuj tekst', style: theme.textTheme.titleMedium),
               ),
+              if (_checking)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
               IconButton(
                 onPressed: () => Navigator.of(context).pop(),
                 icon: const Icon(Icons.close),
@@ -101,7 +136,7 @@ class _EditTextSheetState extends State<EditTextSheet> {
           Text(
             '${target.fontFamily.isEmpty ? "font nieznany" : target.fontFamily}'
             ' · ${target.fontSize.toStringAsFixed(1)} pt'
-            '${target.isFontEmbedded ? " · font osadzony" : ""}',
+            '${target.isFontEmbedded ? " · osadzony w dokumencie" : ""}',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.outline),
           ),
@@ -110,18 +145,15 @@ class _EditTextSheetState extends State<EditTextSheet> {
             controller: _controller,
             autofocus: true,
             maxLines: null,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
               labelText: 'Treść fragmentu',
+              errorText: hasProblems ? 'Font nie zawiera części znaków' : null,
             ),
           ),
-          if (risky.isNotEmpty) ...[
+          if (hasProblems) ...[
             const SizedBox(height: 12),
-            _WarningTile(
-              message: 'Font tego fragmentu jest osadzony w dokumencie i może '
-                  'nie zawierać znaków: ${risky.join(" ")}. Jesli po zapisie '
-                  'znikna, trzeba będzie osadzic pelny font.',
-            ),
+            _MissingGlyphsWarning(characters: unsupported),
           ],
           const SizedBox(height: 16),
           Row(
@@ -138,7 +170,13 @@ class _EditTextSheetState extends State<EditTextSheet> {
               FilledButton(
                 onPressed: () => Navigator.of(context)
                     .pop(ReplaceRequested(_controller.text)),
-                child: const Text('Zatwierdź'),
+                style: hasProblems
+                    ? FilledButton.styleFrom(
+                        backgroundColor: theme.colorScheme.error,
+                        foregroundColor: theme.colorScheme.onError,
+                      )
+                    : null,
+                child: Text(hasProblems ? 'Zatwierdź mimo to' : 'Zatwierdź'),
               ),
             ],
           ),
@@ -148,10 +186,15 @@ class _EditTextSheetState extends State<EditTextSheet> {
   }
 }
 
-class _WarningTile extends StatelessWidget {
-  const _WarningTile({required this.message});
+/// Lista znaków, których font nie potrafi narysować.
+///
+/// Pokazujemy konkretne znaki, a nie ogólnikowe ostrzeżenie, bo to jedyna
+/// informacja, na podstawie której użytkownik może zdecydować, czy zmiana
+/// ma sens.
+class _MissingGlyphsWarning extends StatelessWidget {
+  const _MissingGlyphsWarning({required this.characters});
 
-  final String message;
+  final Set<String> characters;
 
   @override
   Widget build(BuildContext context) {
@@ -159,20 +202,51 @@ class _WarningTile extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: scheme.tertiaryContainer,
+        color: scheme.errorContainer,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.warning_amber_rounded,
-              size: 20, color: scheme.onTertiaryContainer),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(color: scheme.onTertiaryContainer, fontSize: 13),
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.report_gmailerrorred,
+                  size: 20, color: scheme.onErrorContainer),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Font tego fragmentu nie zawiera tych znaków. '
+                  'Po zapisie nie pojawią się w dokumencie:',
+                  style:
+                      TextStyle(color: scheme.onErrorContainer, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final char in characters)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: scheme.onErrorContainer.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    char,
+                    style: TextStyle(
+                      color: scheme.onErrorContainer,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
