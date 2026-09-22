@@ -316,7 +316,8 @@ void _applyReplace(
   final before = _readBounds(pdfium, arena, obj);
 
   if (op['reencodeFont'] == true) {
-    obj = _reencodeFontAsCid(pdfium, arena, doc, page, obj, warnings);
+    obj = _ensureFontCanRender(
+        pdfium, arena, doc, page, obj, newText, warnings);
   }
 
   // Sedno edycji: PDFium podmienia treść istniejącego obiektu, używając jego
@@ -398,68 +399,188 @@ void _applyReplace(
 }
 
 
-/// Przeładowuje font obiektu jako font CID (Identity-H).
+/// Zapewnia, że fragment da się zapisać całym [text] — jeśli trzeba,
+/// podmieniając font na taki, który ma potrzebne glify.
 ///
-/// Sedno problemu z polskimi znakami: prosty font PDF adresuje glify przez
-/// 256 kodów znaków, więc "ł" czy "ą" nie mają tam adresu — nawet gdy glify
-/// siedzą w pliku fontu. Font CID adresuje glify bezpośrednio.
+/// Kolejność prób jest ułożona od najwierniejszej do najbardziej inwazyjnej:
 ///
-/// Bierzemy dane fontu z samego dokumentu (`FPDFFont_GetFontData`) i wczytujemy
-/// je ponownie, więc KRÓJ POZOSTAJE DOKŁADNIE TEN SAM. Nie podstawiamy
-/// żadnego zewnętrznego fontu.
+///  1. Font fragmentu już wszystko potrafi → nie ruszamy NICZEGO. Plik nie
+///     rośnie, obiekt nie jest podmieniany.
+///  2. Ten sam font przeładowany jako CID. Prosty font PDF adresuje glify
+///     przez 256 kodów, więc „ł" nie ma tam adresu nawet wtedy, gdy glif
+///     siedzi w pliku fontu. Font CID adresuje glify bezpośrednio, a krój
+///     zostaje dokładnie ten sam, bo to ten sam plik fontu.
+///  3. Font pożyczony z innego fragmentu tej samej strony. Skoro dokument
+///     gdzieś pokazuje polskie znaki, to jakiś jego font je ma — i lepiej
+///     użyć fontu, który w tym dokumencie już występuje, niż wstawiać obcy.
 ///
-/// PDFium nie ma API zmiany fontu istniejącego obiektu, więc tworzymy nowy
-/// obiekt i usuwamy stary. Przenosimy macierz, rozmiar, kolor i tryb
-/// renderowania; atrybutów, których nie da się odczytać, nie odtworzymy.
-FPDF_PAGEOBJECT _reencodeFontAsCid(
+/// PDFium nie ma API zmiany fontu istniejącego obiektu, więc podmiana
+/// oznacza utworzenie nowego obiektu i usunięcie starego. Przenosimy
+/// macierz, rozmiar i kolor; atrybutów, których nie da się odczytać,
+/// nie odtworzymy.
+FPDF_PAGEOBJECT _ensureFontCanRender(
   PDFium pdfium,
   Arena arena,
   FPDF_DOCUMENT doc,
   FPDF_PAGE page,
   FPDF_PAGEOBJECT source,
+  String text,
   List<String> warnings,
 ) {
-  final font = pdfium.FPDFTextObj_GetFont(source);
-  if (font == nullptr) {
-    warnings.add('Nie udało się odczytać fontu fragmentu — kodowanie bez zmian.');
-    return source;
+  final missing = findUnsupportedCharacters(
+    pdfium: pdfium,
+    arena: arena,
+    document: doc,
+    page: page,
+    textObject: source,
+    text: text,
+  );
+  if (missing.isEmpty) return source;
+
+  final needed = missing.join();
+
+  // 2. Ten sam font, tylko inaczej zaadresowany.
+  final own = pdfium.FPDFTextObj_GetFont(source);
+  final reencoded = own == nullptr
+      ? nullptr
+      : _reloadAsCid(pdfium, arena, doc, _fontData(pdfium, arena, own));
+  if (reencoded != nullptr &&
+      _fontCovers(pdfium, arena, doc, page, reencoded, source, needed)) {
+    return _replaceFont(pdfium, arena, doc, page, source, reencoded, warnings);
   }
 
+  // 3. Font pożyczony z innego fragmentu strony.
+  final donor = _findDonorFont(pdfium, arena, doc, page, source, needed);
+  if (donor != nullptr) {
+    warnings.add(
+      'Ten fragment używa fontu bez polskich znaków. Użyto kroju z innego '
+      'fragmentu dokumentu, więc litery mogą wyglądać nieco inaczej.',
+    );
+    return _replaceFont(pdfium, arena, doc, page, source, donor, warnings);
+  }
+
+  warnings.add(
+    'Nie znaleziono w dokumencie fontu zawierającego znaki: $needed. '
+    'Po zapisie mogą się nie pojawić.',
+  );
+  return source;
+}
+
+/// Szuka na stronie fontu, który potrafi narysować [needed].
+FPDF_FONT _findDonorFont(
+  PDFium pdfium,
+  Arena arena,
+  FPDF_DOCUMENT doc,
+  FPDF_PAGE page,
+  FPDF_PAGEOBJECT source,
+  String needed,
+) {
+  final checked = <int>{};
+  final count = pdfium.FPDFPage_CountObjects(page);
+
+  for (var i = 0; i < count; i++) {
+    final other = pdfium.FPDFPage_GetObject(page, i);
+    if (other == nullptr || other == source) continue;
+    if (pdfium.FPDFPageObj_GetType(other) != _pageObjText) continue;
+
+    final font = pdfium.FPDFTextObj_GetFont(other);
+    if (font == nullptr || !checked.add(font.address)) continue;
+
+    // Najpierw font tak jak jest, potem przeładowany jako CID.
+    if (_fontCovers(pdfium, arena, doc, page, font, source, needed)) {
+      return font;
+    }
+    final reencoded =
+        _reloadAsCid(pdfium, arena, doc, _fontData(pdfium, arena, font));
+    if (reencoded != nullptr &&
+        _fontCovers(pdfium, arena, doc, page, reencoded, source, needed)) {
+      return reencoded;
+    }
+  }
+  return nullptr;
+}
+
+/// Czy [font] narysuje wszystkie znaki z [needed].
+///
+/// Sprawdzamy na tymczasowym obiekcie dopisanym na końcu strony i zaraz
+/// usuwanym — dzięki temu indeksy pozostałych obiektów się nie zmieniają.
+bool _fontCovers(
+  PDFium pdfium,
+  Arena arena,
+  FPDF_DOCUMENT doc,
+  FPDF_PAGE page,
+  FPDF_FONT font,
+  FPDF_PAGEOBJECT sizeReference,
+  String needed,
+) {
+  final size = arena<Float>();
+  pdfium.FPDFTextObj_GetFontSize(sizeReference, size);
+
+  final probe = pdfium.FPDFPageObj_CreateTextObj(
+      doc, font, size.value > 0 ? size.value : 12);
+  if (probe == nullptr) return false;
+
+  pdfium.FPDFPage_InsertObject(page, probe);
+  try {
+    final missing = findUnsupportedCharacters(
+      pdfium: pdfium,
+      arena: arena,
+      document: doc,
+      page: page,
+      textObject: probe,
+      text: needed,
+    );
+    return missing.isEmpty;
+  } finally {
+    if (pdfium.FPDFPage_RemoveObject(page, probe) != 0) {
+      pdfium.FPDFPageObj_Destroy(probe);
+    }
+  }
+}
+
+/// Surowe dane pliku fontu, pusty wskaźnik gdy dokument ich nie udostępnia.
+({Pointer<Uint8> data, int length}) _fontData(
+    PDFium pdfium, Arena arena, FPDF_FONT font) {
   final sizeOut = arena<Size>();
   if (pdfium.FPDFFont_GetFontData(font, nullptr, 0, sizeOut) == 0 ||
       sizeOut.value == 0) {
-    warnings.add(
-      'Dokument nie udostępnia pliku tego fontu, więc nie da się odzyskać '
-      'brakujących znaków bez zmiany kroju.',
-    );
-    return source;
+    return (data: nullptr, length: 0);
   }
-
   final length = sizeOut.value;
   final data = arena<Uint8>(length);
   if (pdfium.FPDFFont_GetFontData(font, data, length, sizeOut) == 0) {
-    warnings.add('Nie udało się odczytać danych fontu — kodowanie bez zmian.');
-    return source;
+    return (data: nullptr, length: 0);
   }
+  return (data: data, length: length);
+}
 
-  // Ten sam plik fontu, tylko wczytany jako CID.
-  var reloaded = pdfium.FPDFText_LoadFont(
-      doc, data, length, FPDF_FONT_TRUETYPE, 1);
-  if (reloaded == nullptr) {
-    reloaded = pdfium.FPDFText_LoadFont(doc, data, length, FPDF_FONT_TYPE1, 1);
-  }
-  if (reloaded == nullptr) {
-    warnings.add('PDFium nie przyjął pliku tego fontu — kodowanie bez zmian.');
-    return source;
-  }
+FPDF_FONT _reloadAsCid(PDFium pdfium, Arena arena, FPDF_DOCUMENT doc,
+    ({Pointer<Uint8> data, int length}) font) {
+  if (font.data == nullptr || font.length == 0) return nullptr;
+  final asTrueType = pdfium.FPDFText_LoadFont(
+      doc, font.data, font.length, FPDF_FONT_TRUETYPE, 1);
+  if (asTrueType != nullptr) return asTrueType;
+  return pdfium.FPDFText_LoadFont(
+      doc, font.data, font.length, FPDF_FONT_TYPE1, 1);
+}
 
+/// Tworzy obiekt z nowym fontem w miejscu starego.
+FPDF_PAGEOBJECT _replaceFont(
+  PDFium pdfium,
+  Arena arena,
+  FPDF_DOCUMENT doc,
+  FPDF_PAGE page,
+  FPDF_PAGEOBJECT source,
+  FPDF_FONT font,
+  List<String> warnings,
+) {
   final fontSize = arena<Float>();
   pdfium.FPDFTextObj_GetFontSize(source, fontSize);
 
   final replacement =
-      pdfium.FPDFPageObj_CreateTextObj(doc, reloaded, fontSize.value);
+      pdfium.FPDFPageObj_CreateTextObj(doc, font, fontSize.value);
   if (replacement == nullptr) {
-    warnings.add('Nie udało się utworzyć fragmentu z przeładowanym fontem.');
+    warnings.add('Nie udało się utworzyć fragmentu z poprawionym fontem.');
     return source;
   }
 
@@ -479,19 +600,17 @@ FPDF_PAGEOBJECT _reencodeFontAsCid(
 
   // Zamiennik MUSI trafić na tę samą pozycję w liście obiektów strony.
   // Dopisanie go na końcu przesunęłoby indeksy wszystkich obiektów za
-  // oryginałem, a cała logika układu operuje właśnie na indeksach —
-  // przesuwałaby wtedy w dół nie te obiekty, co trzeba.
+  // oryginałem, a cała logika układu operuje właśnie na indeksach.
   final index = _indexOfObject(pdfium, page, source);
   if (pdfium.FPDFPage_RemoveObject(page, source) == 0) {
     pdfium.FPDFPageObj_Destroy(replacement);
-    warnings.add('Nie udało się podmienić fragmentu — kodowanie bez zmian.');
+    warnings.add('Nie udało się podmienić fragmentu — font bez zmian.');
     return source;
   }
   pdfium.FPDFPageObj_Destroy(source);
 
-  final inserted = index != null
-      ? pdfium.FPDFPage_InsertObjectAtIndex(page, replacement, index) != 0
-      : false;
+  final inserted = index != null &&
+      pdfium.FPDFPage_InsertObjectAtIndex(page, replacement, index) != 0;
   if (!inserted) {
     pdfium.FPDFPage_InsertObject(page, replacement);
   }

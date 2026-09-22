@@ -20,7 +20,7 @@ late final PDFium pdfium;
 
 const polish = 'Zażółć gęślą jaźń ORAZ RÓWNIEŻ';
 
-void main() {
+void main(List<String> args) {
   pdfium = getPdfium();
   final config = calloc<FPDF_LIBRARY_CONFIG>();
   config.ref.version = 2;
@@ -79,9 +79,79 @@ void main() {
       print('  >>> ${missing.isEmpty ? "WSZYSTKIE ZNAKI OBSLUGIWANE" : "znaki nadal gina"}');
       print('');
     }
+    // Trzeci przypadek: font, ktory polskie znaki JUZ obsluguje.
+    // Naprawa powinna byc wtedy operacja pusta — bez podmiany obiektu
+    // i bez rozdymania pliku.
+    if (args.isNotEmpty && File(args.first).existsSync()) {
+      final ok = '${dir.path}/already_ok.pdf';
+      _buildWithCidFont(ok, File(args.first).readAsBytesSync());
+      final sizeBefore = File(ok).lengthSync();
+
+      final objs = bridge.readPageTextObjects({'path': ok, 'pageIndex': 0});
+      final out = '${dir.path}/already_ok_out.pdf';
+      bridge.applyOperations({
+        'sourcePath': ok,
+        'outputPath': out,
+        'operations': [
+          {
+            'type': 'replace',
+            'pageIndex': 0,
+            'objectIndex': objs.first['objectIndex'],
+            'newText': polish,
+            'reflowMode': 'none',
+            'reencodeFont': true,
+          }
+        ],
+        'minScale': 0.6,
+      });
+      final after = bridge.readPageTextObjects({'path': out, 'pageIndex': 0});
+      final sizeAfter = File(out).lengthSync();
+      final growth = sizeAfter / sizeBefore;
+
+      print('--- NAPRAWA GDY FONT I TAK DZIALA ---');
+      print('  tekst w pliku:   "${after.first['text']}"');
+      print('  rozmiar przed:   ${(sizeBefore / 1024).toStringAsFixed(0)} KB');
+      print('  rozmiar po:      ${(sizeAfter / 1024).toStringAsFixed(0)} KB');
+      print('  przyrost:        ${growth.toStringAsFixed(2)}x');
+      final textOk = after.first['text'] == polish;
+      final noBloat = growth < 1.5;
+      print('  >>> ${textOk && noBloat ? "OK: tekst poprawny, plik sie nie rozdal" : "PROBLEM"}');
+    }
   } finally {
     pdfium.FPDF_DestroyLibrary();
     calloc.free(config);
+  }
+}
+
+/// Dokument z fontem CID, ktory polskie znaki juz obsluguje.
+void _buildWithCidFont(String path, List<int> fontBytes) {
+  final arena = Arena();
+  try {
+    final doc = pdfium.FPDF_CreateNewDocument();
+    final page = pdfium.FPDFPage_New(doc, 0, 595, 842);
+    final data = arena<Uint8>(fontBytes.length);
+    data.asTypedList(fontBytes.length).setAll(0, fontBytes);
+    final font = pdfium.FPDFText_LoadFont(
+        doc, data, fontBytes.length, FPDF_FONT_TRUETYPE, 1);
+    final obj = pdfium.FPDFPageObj_CreateTextObj(doc, font, 12);
+    pdfium.FPDFText_SetText(obj, _wide(arena, 'Tekst poczatkowy'));
+    final m = arena<FS_MATRIX>();
+    m.ref
+      ..a = 1
+      ..b = 0
+      ..c = 0
+      ..d = 1
+      ..e = 60
+      ..f = 700;
+    pdfium.FPDFPageObj_SetMatrix(obj, m);
+    pdfium.FPDFPageObj_SetFillColor(obj, 0, 0, 0, 255);
+    pdfium.FPDFPage_InsertObject(page, obj);
+    pdfium.FPDFPage_GenerateContent(page);
+    pdfium.FPDF_ClosePage(page);
+    _save(doc, path);
+    pdfium.FPDF_CloseDocument(doc);
+  } finally {
+    arena.releaseAll();
   }
 }
 
