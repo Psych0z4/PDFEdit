@@ -304,16 +304,20 @@ void _applyReplace(
         'Obiekt $objectIndex nie jest obiektem tekstowym.');
   }
 
-  if (op['reencodeFont'] == true) {
-    obj = _reencodeFontAsCid(pdfium, arena, doc, page, obj, warnings);
-  }
-
-  // Geometrię czytamy PRZED zmianą treści — po niej bbox obiektu już nie
+  // Geometrię czytamy PRZED jakąkolwiek zmianą — po niej bbox obiektu już nie
   // odpowiada temu, co użytkownik widział na ekranie.
+  //
+  // Kolejność ma znaczenie także wobec przeładowania fontu: zamiennik
+  // powstaje pusty, więc gdyby geometria czytana była po nim, kolumna
+  // wyliczyłaby się z obiektu bez treści i tekst przestałby się łamać.
   final geometry = mode == ReflowMode.auto
       ? readPageGeometry(pdfium, arena, page)
       : null;
   final before = _readBounds(pdfium, arena, obj);
+
+  if (op['reencodeFont'] == true) {
+    obj = _reencodeFontAsCid(pdfium, arena, doc, page, obj, warnings);
+  }
 
   // Sedno edycji: PDFium podmienia treść istniejącego obiektu, używając jego
   // własnego fontu. Pozycja, rozmiar, kolor i macierz zostają zachowane.
@@ -473,11 +477,34 @@ FPDF_PAGEOBJECT _reencodeFontAsCid(
         replacement, r.value, g.value, b.value, a.value);
   }
 
-  pdfium.FPDFPage_InsertObject(page, replacement);
-  if (pdfium.FPDFPage_RemoveObject(page, source) != 0) {
-    pdfium.FPDFPageObj_Destroy(source);
+  // Zamiennik MUSI trafić na tę samą pozycję w liście obiektów strony.
+  // Dopisanie go na końcu przesunęłoby indeksy wszystkich obiektów za
+  // oryginałem, a cała logika układu operuje właśnie na indeksach —
+  // przesuwałaby wtedy w dół nie te obiekty, co trzeba.
+  final index = _indexOfObject(pdfium, page, source);
+  if (pdfium.FPDFPage_RemoveObject(page, source) == 0) {
+    pdfium.FPDFPageObj_Destroy(replacement);
+    warnings.add('Nie udało się podmienić fragmentu — kodowanie bez zmian.');
+    return source;
+  }
+  pdfium.FPDFPageObj_Destroy(source);
+
+  final inserted = index != null
+      ? pdfium.FPDFPage_InsertObjectAtIndex(page, replacement, index) != 0
+      : false;
+  if (!inserted) {
+    pdfium.FPDFPage_InsertObject(page, replacement);
   }
   return replacement;
+}
+
+/// Pozycja obiektu na liście obiektów strony.
+int? _indexOfObject(PDFium pdfium, FPDF_PAGE page, FPDF_PAGEOBJECT target) {
+  final count = pdfium.FPDFPage_CountObjects(page);
+  for (var i = 0; i < count; i++) {
+    if (pdfium.FPDFPage_GetObject(page, i) == target) return i;
+  }
+  return null;
 }
 
 /// Wybiera strategię na podstawie tego, co udało się rozpoznać na stronie.

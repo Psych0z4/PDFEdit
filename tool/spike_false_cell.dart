@@ -54,7 +54,37 @@ void main() {
     final target = before.firstWhere(
         (o) => (o['text']! as String).startsWith('Drugi'));
 
-    final out = '${dir.path}/out.pdf';
+    var totalProblems = 0;
+    for (final reencode in [false, true]) {
+      totalProblems += _runCase(
+        dir: dir.path,
+        src: src,
+        target: target,
+        positions: positions,
+        reencode: reencode,
+      );
+    }
+    print('');
+    print(totalProblems == 0
+        ? 'WYNIK KONCOWY: uklad poprawny w obu wariantach'
+        : 'WYNIK KONCOWY: $totalProblems problemow');
+  } finally {
+    pdfium.FPDF_DestroyLibrary();
+    calloc.free(config);
+  }
+}
+
+/// Jeden przebieg: edycja tego samego fragmentu, z naprawa kodowania i bez.
+int _runCase({
+  required String dir,
+  required String src,
+  required Map<String, Object?> target,
+  required Map<String, double> positions,
+  required bool reencode,
+}) {
+    print('');
+    print('=== ${reencode ? "Z NAPRAWA kodowania" : "BEZ naprawy"} ===');
+    final out = '$dir/out_$reencode.pdf';
     final result = bridge.applyOperations({
       'sourcePath': src,
       'outputPath': out,
@@ -66,7 +96,7 @@ void main() {
           'newText': 'Drugi wiersz akapitu zostal wydluzony na tyle, ze musi '
               'zajac dwa wiersze zamiast jednego',
           'reflowMode': 'auto',
-          'reencodeFont': false,
+          'reencodeFont': reencode,
         }
       ],
       'minScale': 0.6,
@@ -124,12 +154,10 @@ void main() {
       print('OK: zaden fragment nie nachodzi na inny');
     }
 
-    print('');
-    print(problems == 0 ? 'WYNIK: uklad poprawny' : 'WYNIK: $problems problemow');
-  } finally {
-    pdfium.FPDF_DestroyLibrary();
-    calloc.free(config);
-  }
+    print(problems == 0
+        ? '>>> uklad poprawny'
+        : '>>> $problems problemow');
+    return problems;
 }
 
 int _countOverlaps(List<Map<String, Object?>> objects) {
