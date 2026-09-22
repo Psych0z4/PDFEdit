@@ -31,6 +31,7 @@ void main() {
 
   try {
     _build(src);
+    print('Katalog: ${dir.path}');
     final objects = bridge.readPageTextObjects({'path': src, 'pageIndex': 0});
     final target = objects.first;
     print('Font w dokumencie: ${target['fontFamily']}  '

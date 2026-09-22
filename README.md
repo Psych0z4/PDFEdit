@@ -149,6 +149,19 @@ przed napisaniem kodu aplikacji. Uruchamiane przez `dart run tool/<nazwa>.dart`:
 | `spike_font_reencode.dart` | że przeładowanie fontu jako CID odzyskuje polskie znaki |
 | `spike_polish_roundtrip.dart` | pełny scenariusz: wpisanie polskiego tekstu i odczyt z pliku |
 | `spike_fallback_font.dart` | osadzenie zewnętrznego fontu (ścieżka odrzucona — zmienia krój) |
+| `spike_false_cell.dart` | że ozdobniki strony nie są brane za komórkę tabeli, w obu wariantach kodowania |
+
+## Diagnostyka konkretnego pliku
+
+Gdy polskie znaki nie działają w jakimś dokumencie:
+
+```bash
+dart run tool/diagnose_pdf.dart moj-plik.pdf [numer-strony]
+```
+
+Dla każdego fontu na stronie narzędzie odpowiada, czy polskie znaki da się
+wpisać i czy naprawa kodowania pomoże. Nie wypisuje treści dokumentu —
+tylko nazwy fontów i zbiory znaków.
 
 `spike_cell_wrap.dart` i `spike_layout.dart` wywołują prawdziwe funkcje z
 `pdfium_bridge.dart` — te same, których używa aplikacja.
