@@ -18,6 +18,7 @@ class ReplaceTextOperation extends EditOperation {
     required this.objectIndex,
     required this.newText,
     this.reflowMode = ReflowMode.auto,
+    this.reencodeFont = false,
   });
 
   final int objectIndex;
@@ -25,6 +26,11 @@ class ReplaceTextOperation extends EditOperation {
 
   /// Jak dopasować tekst, gdy po zmianie nie mieści się w oryginalnym miejscu.
   final ReflowMode reflowMode;
+
+  /// Przeładuj font dokumentu jako CID, żeby odzyskać znaki niedostępne
+  /// przez 256-kodowe kodowanie prostego fontu. Krój zostaje ten sam —
+  /// to dosłownie ten sam plik fontu, zmienia się tylko adresowanie glifów.
+  final bool reencodeFont;
 }
 
 /// Usunięcie obiektu ze strony (FPDFPage_RemoveObject) — realne usunięcie

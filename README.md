@@ -35,7 +35,8 @@ opuszcza urządzenia.
 - Undo / Redo oparte o stos rewizji plikowych
 - Save as / Share
 - Wykrywanie skanów (brak warstwy tekstowej) z komunikatem o OCR
-- Ostrzeżenie o brakujących glifach przy fontach osadzonych (subsety)
+- **Odzyskiwanie polskich znaków**: dokładna detekcja brakujących glifów i naprawa
+  przez przeładowanie fontu dokumentu jako CID — bez zmiany kroju
 
 ## Reflow
 
@@ -65,10 +66,13 @@ i publicznego API PDFium.
 - **Granularność = obiekt tekstowy, nie słowo.** PDF nie zna pojęcia słowa ani
   akapitu. Jeden obiekt to fragment content streamu: czasem cała linia, czasem
   kilka liter. Edytujemy cały taki fragment.
-- **Fonty subsetowane.** `FPDFText_SetText` mapuje znaki przez
-  `font->CharCodeFromUnicode`. PDF-y z Worda czy LaTeX-a osadzają tylko użyte
-  glify, więc np. polskie znaki nieobecne w oryginale mogą się nie pojawić.
-  PDFium nie zgłosi błędu — zwraca `false` tylko, gdy zawiodły *wszystkie* znaki.
+- **Kodowanie fontu ogranicza dostępne znaki.** Prosty font PDF adresuje glify
+  przez 256 kodów, więc „ł" czy „ą" nie mają tam adresu nawet wtedy, gdy glify
+  są w pliku fontu. Aplikacja wykrywa to dokładnie (renderując znak
+  i porównując z wzorcem `.notdef`) i potrafi naprawić, przeładowując font
+  **z tego samego dokumentu** jako font CID — krój zostaje bez zmian.
+  Koszt: font zostaje osadzony w pliku, co przy foncie wcześniej
+  nieosadzonym potrafi dodać kilkaset kilobajtów.
 - **Brak re-justowania sąsiednich wierszy.** Łamiemy edytowany fragment i robimy
   mu miejsce, ale nie przelewamy tekstu między wierszami akapitu. Celowo:
   sklejanie wierszy zniszczyłoby układy, które tylko wyglądają jak akapit —
@@ -137,10 +141,14 @@ przed napisaniem kodu aplikacji. Uruchamiane przez `dart run tool/<nazwa>.dart`:
 | Skrypt | Co weryfikuje |
 |---|---|
 | `spike.dart` | że `FPDFText_SetText` trwale podmienia tekst i że `GetBounds` przelicza się po zmianie |
-| `spike_wrap.dart` | że nowy obiekt tekstowy przyjmie uchwyt fontu z istniejącego |
 | `spike_row.dart` | powiększanie wiersza tabeli — przez transformacje i przez odbudowę ścieżki |
 | `spike_cell_wrap.dart` | łamanie tekstu w komórce, na kodzie produkcyjnym |
 | `spike_layout.dart` | tabela, akapit i opływanie obrazka, na kodzie produkcyjnym |
+| `spike_glyph_coverage.dart` | regresja detekcji znaków wobec znanej zawartości WinAnsi |
+| `spike_glyph_probe.dart` | detekcja na kodzie produkcyjnym + brak modyfikacji pliku |
+| `spike_font_reencode.dart` | że przeładowanie fontu jako CID odzyskuje polskie znaki |
+| `spike_polish_roundtrip.dart` | pełny scenariusz: wpisanie polskiego tekstu i odczyt z pliku |
+| `spike_fallback_font.dart` | osadzenie zewnętrznego fontu (ścieżka odrzucona — zmienia krój) |
 
 `spike_cell_wrap.dart` i `spike_layout.dart` wywołują prawdziwe funkcje z
 `pdfium_bridge.dart` — te same, których używa aplikacja.

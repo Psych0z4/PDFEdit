@@ -21,7 +21,8 @@ import 'package:pdfium_flutter/pdfium_flutter.dart';
 /// pikseli przy wzorcu braku glifu równym 1379. Dopiero wymiary i suma
 /// kontrolna rozstrzygają jednoznacznie.
 class GlyphSignature {
-  const GlyphSignature(this.width, this.height, this.ink, this.checksum);
+  const GlyphSignature(this.width, this.height, this.ink, this.checksum,
+      {this.reliableInk = false});
 
   static const empty = GlyphSignature(0, 0, 0, 0);
 
@@ -30,7 +31,11 @@ class GlyphSignature {
   final int ink;
   final int checksum;
 
-  bool get isBlank => ink == 0;
+  /// Czy liczba zamalowanych pikseli jest wiarygodna. Bez kanału alfa
+  /// opieramy się na kolorze tła i pusta bitmapa nie jest dowodem.
+  final bool reliableInk;
+
+  bool get isBlank => reliableInk && ink == 0;
 
   @override
   bool operator ==(Object other) =>
@@ -137,10 +142,16 @@ GlyphSignature _signatureOf({
     final bytesPerPixel = stride ~/ width;
     if (bytesPerPixel <= 0) return GlyphSignature.empty;
 
-    // Tło bierzemy z lewego górnego rogu — tam na pewno nie ma glifu.
-    final background = <int>[
-      for (var i = 0; i < bytesPerPixel; i++) bytes[i],
-    ];
+    // Tło rozpoznajemy po kanale alfa, a NIE po kolorze lewego górnego rogu.
+    // Wąskie glify ("l", "i") wypełniają całą przyciętą bitmapę, więc róg
+    // bywa już literą — heurystyka rogu dawała wtedy fałszywe "brak glifu".
+    final format = pdfium.FPDFBitmap_GetFormat(bitmap);
+    final hasAlpha = bytesPerPixel >= 4 &&
+        (format == FPDFBitmap_BGRA || format == FPDFBitmap_BGRA_Premul);
+
+    final background = hasAlpha
+        ? const <int>[]
+        : <int>[for (var i = 0; i < bytesPerPixel; i++) bytes[i]];
 
     var ink = 0;
     var checksum = 0;
@@ -148,20 +159,25 @@ GlyphSignature _signatureOf({
       final rowOffset = y * stride;
       for (var x = 0; x < width; x++) {
         final offset = rowOffset + x * bytesPerPixel;
-        var differs = false;
-        for (var c = 0; c < bytesPerPixel; c++) {
-          if (bytes[offset + c] != background[c]) {
-            differs = true;
-            break;
+        bool inked;
+        if (hasAlpha) {
+          inked = bytes[offset + 3] != 0;
+        } else {
+          inked = false;
+          for (var c = 0; c < bytesPerPixel; c++) {
+            if (bytes[offset + c] != background[c]) {
+              inked = true;
+              break;
+            }
           }
         }
-        if (differs) {
+        if (inked) {
           ink++;
           checksum = (checksum * 31 + (y * width + x)) & 0x3FFFFFFF;
         }
       }
     }
-    return GlyphSignature(width, height, ink, checksum);
+    return GlyphSignature(width, height, ink, checksum, reliableInk: hasAlpha);
   } finally {
     pdfium.FPDFBitmap_Destroy(bitmap);
   }

@@ -153,6 +153,7 @@ class PdfiumPdfEngine implements PdfEngine {
             'objectIndex': op.objectIndex,
             'newText': op.newText,
             'reflowMode': op.reflowMode.name,
+            'reencodeFont': op.reencodeFont,
           },
         DeleteObjectOperation() => <String, Object?>{
             'type': 'delete',

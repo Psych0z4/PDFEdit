@@ -11,8 +11,13 @@ sealed class EditSheetResult {
 }
 
 class ReplaceRequested extends EditSheetResult {
-  const ReplaceRequested(this.newText);
+  const ReplaceRequested(this.newText, {this.reencodeFont = false});
+
   final String newText;
+
+  /// Przeładuj font dokumentu jako CID, żeby odzyskać brakujące znaki
+  /// bez zmiany kroju.
+  final bool reencodeFont;
 }
 
 class DeleteRequested extends EditSheetResult {
@@ -52,6 +57,7 @@ class _EditTextSheetState extends State<EditTextSheet> {
   Timer? _timer;
   GlyphCoverageReport? _report;
   bool _checking = false;
+  bool _reencode = false;
 
   /// Rośnie przy każdym sprawdzeniu — pozwala odrzucić wynik, który wrócił
   /// już po kolejnej zmianie tekstu.
@@ -151,9 +157,16 @@ class _EditTextSheetState extends State<EditTextSheet> {
               errorText: hasProblems ? 'Font nie zawiera części znaków' : null,
             ),
           ),
-          if (hasProblems) ...[
+          if (hasProblems && !_reencode) ...[
             const SizedBox(height: 12),
-            _MissingGlyphsWarning(characters: unsupported),
+            _MissingGlyphsWarning(
+              characters: unsupported,
+              onFix: () => setState(() => _reencode = true),
+            ),
+          ],
+          if (_reencode) ...[
+            const SizedBox(height: 12),
+            const _ReencodeNotice(),
           ],
           const SizedBox(height: 16),
           Row(
@@ -168,15 +181,18 @@ class _EditTextSheetState extends State<EditTextSheet> {
               ),
               const Spacer(),
               FilledButton(
-                onPressed: () => Navigator.of(context)
-                    .pop(ReplaceRequested(_controller.text)),
-                style: hasProblems
+                onPressed: () => Navigator.of(context).pop(
+                  ReplaceRequested(_controller.text, reencodeFont: _reencode),
+                ),
+                style: hasProblems && !_reencode
                     ? FilledButton.styleFrom(
                         backgroundColor: theme.colorScheme.error,
                         foregroundColor: theme.colorScheme.onError,
                       )
                     : null,
-                child: Text(hasProblems ? 'Zatwierdź mimo to' : 'Zatwierdź'),
+                child: Text(hasProblems && !_reencode
+                    ? 'Zatwierdź mimo to'
+                    : 'Zatwierdź'),
               ),
             ],
           ),
@@ -192,9 +208,10 @@ class _EditTextSheetState extends State<EditTextSheet> {
 /// informacja, na podstawie której użytkownik może zdecydować, czy zmiana
 /// ma sens.
 class _MissingGlyphsWarning extends StatelessWidget {
-  const _MissingGlyphsWarning({required this.characters});
+  const _MissingGlyphsWarning({required this.characters, required this.onFix});
 
   final Set<String> characters;
+  final VoidCallback onFix;
 
   @override
   Widget build(BuildContext context) {
@@ -247,6 +264,51 @@ class _MissingGlyphsWarning extends StatelessWidget {
                   ),
                 ),
             ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.tonalIcon(
+              onPressed: onFix,
+              icon: const Icon(Icons.auto_fix_high, size: 18),
+              label: const Text('Odzyskaj te znaki'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Informacja, co dokładnie zrobi odzyskiwanie znaków.
+///
+/// Ważne, żeby użytkownik wiedział, że krój NIE zostanie podmieniony —
+/// to najczęstsza obawa przy takich operacjach.
+class _ReencodeNotice extends StatelessWidget {
+  const _ReencodeNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.check_circle_outline,
+              size: 20, color: scheme.onSecondaryContainer),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Zostanie użyty ten sam font co w dokumencie, tylko z pełnym '
+              'kodowaniem znaków. Krój pisma się nie zmieni.',
+              style:
+                  TextStyle(color: scheme.onSecondaryContainer, fontSize: 13),
+            ),
           ),
         ],
       ),

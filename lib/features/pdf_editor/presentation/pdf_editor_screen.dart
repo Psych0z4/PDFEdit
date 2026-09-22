@@ -192,8 +192,9 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
     );
 
     switch (result) {
-      case ReplaceRequested(:final newText):
-        await _controller.replaceSelectedText(newText);
+      case ReplaceRequested(:final newText, :final reencodeFont):
+        await _controller.replaceSelectedText(newText,
+            reencodeFont: reencodeFont);
       case DeleteRequested():
         await _controller.deleteSelected();
       case null:

@@ -293,10 +293,14 @@ void _applyReplace(
   final newText = op['newText']! as String;
   final mode = ReflowMode.values.byName(op['reflowMode']! as String);
 
-  final obj = pdfium.FPDFPage_GetObject(page, objectIndex);
+  var obj = pdfium.FPDFPage_GetObject(page, objectIndex);
   if (obj == nullptr || pdfium.FPDFPageObj_GetType(obj) != _pageObjText) {
     throw PdfiumBridgeException(
         'Obiekt $objectIndex nie jest obiektem tekstowym.');
+  }
+
+  if (op['reencodeFont'] == true) {
+    obj = _reencodeFontAsCid(pdfium, arena, doc, page, obj, warnings);
   }
 
   // Geometrię czytamy PRZED zmianą treści — po niej bbox obiektu już nie
@@ -382,6 +386,93 @@ void _applyReplace(
     _scaleMatrix(pdfium, matrix, obj, plan.scale);
   }
   warnings.addAll(plan.warnings);
+}
+
+
+/// Przeładowuje font obiektu jako font CID (Identity-H).
+///
+/// Sedno problemu z polskimi znakami: prosty font PDF adresuje glify przez
+/// 256 kodów znaków, więc "ł" czy "ą" nie mają tam adresu — nawet gdy glify
+/// siedzą w pliku fontu. Font CID adresuje glify bezpośrednio.
+///
+/// Bierzemy dane fontu z samego dokumentu (`FPDFFont_GetFontData`) i wczytujemy
+/// je ponownie, więc KRÓJ POZOSTAJE DOKŁADNIE TEN SAM. Nie podstawiamy
+/// żadnego zewnętrznego fontu.
+///
+/// PDFium nie ma API zmiany fontu istniejącego obiektu, więc tworzymy nowy
+/// obiekt i usuwamy stary. Przenosimy macierz, rozmiar, kolor i tryb
+/// renderowania; atrybutów, których nie da się odczytać, nie odtworzymy.
+FPDF_PAGEOBJECT _reencodeFontAsCid(
+  PDFium pdfium,
+  Arena arena,
+  FPDF_DOCUMENT doc,
+  FPDF_PAGE page,
+  FPDF_PAGEOBJECT source,
+  List<String> warnings,
+) {
+  final font = pdfium.FPDFTextObj_GetFont(source);
+  if (font == nullptr) {
+    warnings.add('Nie udało się odczytać fontu fragmentu — kodowanie bez zmian.');
+    return source;
+  }
+
+  final sizeOut = arena<Size>();
+  if (pdfium.FPDFFont_GetFontData(font, nullptr, 0, sizeOut) == 0 ||
+      sizeOut.value == 0) {
+    warnings.add(
+      'Dokument nie udostępnia pliku tego fontu, więc nie da się odzyskać '
+      'brakujących znaków bez zmiany kroju.',
+    );
+    return source;
+  }
+
+  final length = sizeOut.value;
+  final data = arena<Uint8>(length);
+  if (pdfium.FPDFFont_GetFontData(font, data, length, sizeOut) == 0) {
+    warnings.add('Nie udało się odczytać danych fontu — kodowanie bez zmian.');
+    return source;
+  }
+
+  // Ten sam plik fontu, tylko wczytany jako CID.
+  var reloaded = pdfium.FPDFText_LoadFont(
+      doc, data, length, FPDF_FONT_TRUETYPE, 1);
+  if (reloaded == nullptr) {
+    reloaded = pdfium.FPDFText_LoadFont(doc, data, length, FPDF_FONT_TYPE1, 1);
+  }
+  if (reloaded == nullptr) {
+    warnings.add('PDFium nie przyjął pliku tego fontu — kodowanie bez zmian.');
+    return source;
+  }
+
+  final fontSize = arena<Float>();
+  pdfium.FPDFTextObj_GetFontSize(source, fontSize);
+
+  final replacement =
+      pdfium.FPDFPageObj_CreateTextObj(doc, reloaded, fontSize.value);
+  if (replacement == nullptr) {
+    warnings.add('Nie udało się utworzyć fragmentu z przeładowanym fontem.');
+    return source;
+  }
+
+  final matrix = arena<FS_MATRIX>();
+  if (pdfium.FPDFPageObj_GetMatrix(source, matrix) != 0) {
+    pdfium.FPDFPageObj_SetMatrix(replacement, matrix);
+  }
+
+  final r = arena<UnsignedInt>(),
+      g = arena<UnsignedInt>(),
+      b = arena<UnsignedInt>(),
+      a = arena<UnsignedInt>();
+  if (pdfium.FPDFPageObj_GetFillColor(source, r, g, b, a) != 0) {
+    pdfium.FPDFPageObj_SetFillColor(
+        replacement, r.value, g.value, b.value, a.value);
+  }
+
+  pdfium.FPDFPage_InsertObject(page, replacement);
+  if (pdfium.FPDFPage_RemoveObject(page, source) != 0) {
+    pdfium.FPDFPageObj_Destroy(source);
+  }
+  return replacement;
 }
 
 /// Wybiera strategię na podstawie tego, co udało się rozpoznać na stronie.

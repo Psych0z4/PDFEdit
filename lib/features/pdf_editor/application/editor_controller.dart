@@ -181,7 +181,8 @@ class EditorController extends ChangeNotifier {
     return result.valueOrNull;
   }
 
-  Future<void> replaceSelectedText(String newText) async {
+  Future<void> replaceSelectedText(String newText,
+      {bool reencodeFont = false}) async {
     final target = _selected;
     if (target == null) return;
     if (newText == target.text) {
@@ -194,6 +195,7 @@ class EditorController extends ChangeNotifier {
         pageIndex: target.pageIndex,
         objectIndex: target.objectIndex,
         newText: newText,
+        reencodeFont: reencodeFont,
       ),
     ]);
   }
