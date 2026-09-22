@@ -195,16 +195,19 @@ class CellWrapStrategy {
       final blockHeight = (lines.length - 1) * leading + ascent + descent;
       if (blockHeight > maxHeight) continue;
 
-      // Wycentrowanie w pionie: liczymy, gdzie ma wylądować pierwsza linia
-      // bazowa, i zwracamy różnicę wobec obecnej.
+      // Centrujemy w pionie TYLKO wtedy, gdy tekst faktycznie został
+      // złamany na kilka wierszy. Przy jednym wierszu zostawiamy go
+      // dokładnie tam, gdzie był — przesuwanie tekstu, który nie urósł,
+      // to zmiana, o którą nikt nie prosił.
       final targetBaseline =
           box.bottom + (box.height + blockHeight) / 2 - ascent;
+      final shift = lines.length > 1 ? targetBaseline - baselineY : 0.0;
 
       return ReflowPlan(
         lines: lines,
         leading: leading,
         scale: scale,
-        baselineShift: targetBaseline - baselineY,
+        baselineShift: shift,
         warnings: scale < 0.999
             ? [
                 'Tekst nie zmieścił się w komórce w pełnym rozmiarze — '

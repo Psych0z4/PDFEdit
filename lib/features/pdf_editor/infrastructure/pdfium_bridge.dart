@@ -291,7 +291,12 @@ void _applyReplace(
 ) {
   final objectIndex = op['objectIndex']! as int;
   final newText = op['newText']! as String;
-  final mode = ReflowMode.values.byName(op['reflowMode']! as String);
+  // Nieznana wartość nie może wywalić całej edycji — wracamy do trybu
+  // automatycznego, który i tak ma bezpieczny wariant zapasowy.
+  final mode = ReflowMode.values.firstWhere(
+    (m) => m.name == op['reflowMode'],
+    orElse: () => ReflowMode.auto,
+  );
 
   var obj = pdfium.FPDFPage_GetObject(page, objectIndex);
   if (obj == nullptr || pdfium.FPDFPageObj_GetType(obj) != _pageObjText) {

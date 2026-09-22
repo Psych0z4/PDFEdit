@@ -160,8 +160,30 @@ class PageGeometry {
       return null;
     }
     final box = LayoutBox(left: left, right: right, top: top, bottom: bottom);
-    if (box.width < target.fontSize || box.height < target.fontSize) return null;
-    return box;
+    return _isPlausibleCell(box, target) ? box : null;
+  }
+
+  /// Czy znaleziony prostokąt może być komórką tabeli.
+  ///
+  /// Prawie każda strona ma linie, które tabelą nie są: kreskę pod nagłówkiem,
+  /// kreskę nad stopką, ramkę strony. Bez tego sprawdzenia zwykły akapit
+  /// dostaje strategię komórkową i zostaje wyśrodkowany w wymyślonym
+  /// pudełku wielkości pół strony — czyli ląduje na innej treści.
+  ///
+  /// Fałszywe rozpoznanie kosztuje dużo (tekst skacze przez stronę),
+  /// a przeoczenie prawdziwej komórki tylko tyle, że zadziała strategia
+  /// akapitowa. Dlatego progi są celowo ostrożne.
+  bool _isPlausibleCell(LayoutBox box, TextBlock target) {
+    if (box.width < target.fontSize || box.height < target.fontSize) {
+      return false;
+    }
+    // Komórka wyższa niż kilka wierszy własnego tekstu to już nie komórka.
+    if (box.height > target.fontSize * 8) return false;
+    // Ani taka, która zajmuje znaczną część wysokości strony.
+    if (box.height > pageHeight * 0.2) return false;
+    // Ani taka szeroka jak cała strona — to ramka, nie komórka.
+    if (box.width > pageWidth * 0.9) return false;
+    return true;
   }
 
   /// Kolumna tekstu, do której należy obiekt.
@@ -268,30 +290,56 @@ class PageGeometry {
 
   /// Obiekty, które trzeba przesunąć, gdy edytowany tekst urośnie o wiersz.
   ///
-  /// Bierzemy wszystko, co leży poniżej i mieści się w tej samej kolumnie —
-  /// także obrazki, bo one też muszą zrobić miejsce. Sąsiednia kolumna
-  /// i strefa stopki zostają nietknięte.
+  /// Bierzemy to, co leży poniżej i w tej samej kolumnie — także obrazki, bo
+  /// one też muszą zrobić miejsce. Sąsiednia kolumna zostaje nietknięta.
+  ///
+  /// Kluczowe: przesuwanie zatrzymuje się na pierwszej dużej przerwie
+  /// w treści. Kreska nad stopką leżąca 500 pt niżej nie należy do tego
+  /// akapitu i nie ma powodu, żeby jechała razem z nim.
   Set<int> objectsBelow(TextBlock target, ColumnInfo column) {
+    final candidates = objects.where((obj) {
+      if (obj.index == target.index) return false;
+      if (obj.top >= target.bottom) return false;
+      if (obj.centerY < bottomSafeMargin) return false;
+      if (_isPageBackground(obj)) return false;
+      return obj.left < column.right && obj.right > column.left;
+    }).toList()
+      ..sort((a, b) => b.top.compareTo(a.top));
+
+    final maxGap = target.fontSize * 4;
     final result = <int>{};
-    for (final obj in objects) {
-      if (obj.index == target.index) continue;
-      if (obj.top >= target.bottom) continue;
-      if (obj.centerY < bottomSafeMargin) continue;
-      if (_isPageBackground(obj)) continue;
-      final overlapsColumn = obj.left < column.right && obj.right > column.left;
-      if (overlapsColumn) result.add(obj.index);
+    var flowBottom = target.bottom;
+
+    for (final obj in candidates) {
+      if (flowBottom - obj.top > maxGap) break;
+      result.add(obj.index);
+      if (obj.bottom < flowBottom) flowBottom = obj.bottom;
     }
     return result;
   }
 
-  /// Ile miejsca w pionie da się odzyskać bez wchodzenia w stopkę.
+  /// Ile miejsca w pionie da się odzyskać, zanim przesuwana treść wejdzie
+  /// na to, co zostaje w miejscu.
   double freeSpaceBelow(TextBlock target, Set<int> moving) {
-    var lowest = target.bottom;
+    var lowestMoving = target.bottom;
     for (final obj in objects) {
-      if (!moving.contains(obj.index)) continue;
-      if (obj.bottom < lowest) lowest = obj.bottom;
+      if (moving.contains(obj.index) && obj.bottom < lowestMoving) {
+        lowestMoving = obj.bottom;
+      }
     }
-    return lowest - bottomSafeMargin;
+
+    // Najbliższa przeszkoda poniżej, która NIE jedzie razem z tekstem.
+    var obstacleTop = bottomSafeMargin;
+    for (final obj in objects) {
+      if (moving.contains(obj.index)) continue;
+      if (obj.index == target.index) continue;
+      if (_isPageBackground(obj)) continue;
+      if (obj.top >= lowestMoving) continue;
+      if (obj.left >= target.right && obj.right <= target.left) continue;
+      if (obj.top > obstacleTop) obstacleTop = obj.top;
+    }
+
+    return lowestMoving - obstacleTop;
   }
 
   /// Tło strony albo ramka wokół całej zawartości — takich nie ruszamy

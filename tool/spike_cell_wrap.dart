@@ -93,7 +93,8 @@ void _scenario({
         'pageIndex': 0,
         'objectIndex': objectIndex,
         'newText': newText,
-        'reflowMode': 'cellAwareWrap',
+        'reflowMode': 'auto',
+        'reencodeFont': false,
       }
     ],
     'minScale': 0.6,
